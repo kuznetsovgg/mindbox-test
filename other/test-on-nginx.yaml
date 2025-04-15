@@ -1,0 +1,104 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mindbox-test
+spec:
+  replicas: 4 # по условию достаточно
+  strategy:
+    rollingUpdate: # стандартно
+      maxUnavailable: 1 
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: mindbox-test
+  template:
+    metadata:
+      labels:
+        app: mindbox-test
+    spec:
+      containers:
+      - name: mindbox-test
+        image: nginx:alpine
+        resources:
+          requests:
+            cpu: "0.2" # нужно проверять, достаточно ли +100% от стандартного, но, в любом случае, еще есть лимит
+            memory: "128Mi"
+          limits:
+            cpu: "0.4"
+            memory: "128Mi"
+        ports:
+          - containerPort: 80
+        # readinessProbe:
+        #   httpGet:
+        #     path: /ready # или просто к какому-нибудь index.html
+        #     port: 80
+        #   initialDelaySeconds: 10 # берем максимально возможное время инициализации
+        # livenessProbe:
+        #   httpGet:
+        #     path: /alive
+        #     port: 80
+        #   initialDelaySeconds: 20 # по стандарту учтем readiness пробу
+        #   periodSeconds: 10
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                  - key: app
+                    operator: In
+                    values: [mindbox-test] # запретим размещение нескольких приложений на одной ноде
+                topologyKey: kubernetes.io/hostname
+      topologySpreadConstraints:
+        - maxSkew: 1 # согласно доке, это максимальный перекос, для наших 3 зон с 4 подами в целом не важно, оно итак должно пытаться минимизировать этот "перекос", так что все зоны будут покрыты
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: mindbox-test
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mindbox-test-service
+spec:
+  type: ClusterIP # пока что сделаем сервис только внутри кластера
+  selector:
+    app: mindbox-test
+  ports:
+  - port: 80
+    targetPort: 80
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler 
+metadata:
+  name: mindbox-test-scaler
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: mindbox-test
+  minReplicas: 2
+  maxReplicas: 4
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu # будем смотреть нагрузку по cpu и по ней скейлиться
+      target:
+        type: Utilization
+        averageUtilization: 70 # средняя у нас 0.1, как только будет 0.14 будем скейлить
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 10
+      policies:
+      - type: Pods
+        value: 1
+        periodSeconds: 10
+    scaleUp:
+      stabilizationWindowSeconds: 10
+      policies:
+      - type: Pods
+        value: 1
+        periodSeconds: 10
